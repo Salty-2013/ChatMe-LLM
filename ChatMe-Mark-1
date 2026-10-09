@@ -1,0 +1,219 @@
+ChatMe(Mark 1)
+
+import numpy as np
+
+epochs = 1000
+
+# --- Hyperparameters ---
+block_size = 8       # Max context length
+n_embd = 16          # Embedding dimension
+vocab_size = 0       # Set dynamically based on dataset
+lr = 0.00001           # Learning rate
+# -----------------------
+
+np.random.seed(42)
+
+# 1. Toy Dataset and Tokenizer
+text = """
+Saya setiap hari makan nasi.
+Apakah kawan saya baik?
+ABCDEFGHIJKLMNOPQRSTUVWXYZ.
+Boboiboy adalah superhero.
+abcdefghijklmnopqrstuvwxyz.
+Ouh,patutlah cikgu gigih mengajar.
+"""
+chars = sorted(list(set(text)))
+vocab_size = len(chars)
+stoi = {ch: i for i, ch in enumerate(chars)}
+itos = {i: ch for i, ch in enumerate(chars)}
+
+encode = lambda s: [stoi[c] for c in s]
+decode = lambda l: ''.join([itos[i] for i in l])
+data = encode(text)
+
+# 2. Parameters Initialization
+# Embeddings
+W_token = np.random.randn(vocab_size, n_embd) * 0.1
+W_pos = np.random.randn(block_size, n_embd) * 0.1
+
+# Attention Layers (Query, Key, Value, Output Projection)
+W_q = np.random.randn(n_embd, n_embd) * np.sqrt(2.0 / n_embd)
+W_k = np.random.randn(n_embd, n_embd) * np.sqrt(2.0 / n_embd)
+W_v = np.random.randn(n_embd, n_embd) * np.sqrt(2.0 / n_embd)
+W_proj = np.random.randn(n_embd, n_embd) * np.sqrt(2.0 / n_embd)
+
+# Feed-Forward Network Layers (Hidden size = 4 * n_embd)
+ff_hidden = 4 * n_embd
+W_ff1 = np.random.randn(n_embd, ff_hidden) * np.sqrt(2.0 / n_embd)
+b_ff1 = np.zeros((1, ff_hidden))
+W_ff2 = np.random.randn(ff_hidden, n_embd) * np.sqrt(2.0 / ff_hidden)
+b_ff2 = np.zeros((1, n_embd))
+
+# Final Language Model Classification Head
+W_lm = np.random.randn(n_embd, vocab_size) * np.sqrt(2.0 / n_embd)
+b_lm = np.zeros((1, vocab_size))
+
+# Helper Functions
+def softmax(x, axis=-1):
+    exps = np.exp(x - np.max(x, axis=axis, keepdims=True))
+    return exps / np.sum(exps, axis=axis, keepdims=True)
+
+def relu(x):
+    return np.maximum(0, x)
+
+# 3. Training Loop (Single Sequence Backpropagation)
+print("Training NumPy LLM from scratch...")
+
+for epoch in range(epochs):
+    # Grab a random segment of text as our training sequence
+    idx = np.random.randint(0, len(data) - block_size - 1)
+    x_seq = data[idx:idx+block_size]
+    y_seq = data[idx+1:idx+block_size+1]
+    
+    T = len(x_seq)
+    
+    # --- FORWARD PASS ---
+    # Token & Position Embedding Lookups
+    tok_emb = W_token[x_seq] # (T, n_embd)
+    pos_emb = W_pos[np.arange(T)] # (T, n_embd)
+    x0 = tok_emb + pos_emb # (T, n_embd)
+    
+    # Self-Attention
+    Q = x0 @ W_q # (T, n_embd)
+    K = x0 @ W_k # (T, n_embd)
+    V = x0 @ W_v # (T, n_embd)
+    
+    # Raw Attention Scores
+    attn_scores = (Q @ K.T) / np.sqrt(n_embd) # (T, T)
+    
+    # Apply Causal Mask (lower triangular matrix)
+    mask = np.tril(np.ones((T, T)))
+    attn_scores = np.where(mask == 1, attn_scores, -1e9)
+    
+    # Softmax to get Attention Probabilities
+    attn_probs = softmax(attn_scores, axis=-1) # (T, T)
+    
+    # Attention Output
+    attn_out = attn_probs @ V # (T, n_embd)
+    attn_proj = attn_out @ W_proj # (T, n_embd)
+    
+    # First Residual Connection
+    x1 = x0 + attn_proj # (T, n_embd)
+    
+    # Feed-Forward Network
+    ff1 = x1 @ W_ff1 + b_ff1 # (T, ff_hidden)
+    ff1_act = relu(ff1)      # (T, ff_hidden)
+    ff2 = ff1_act @ W_ff2 + b_ff2 # (T, n_embd)
+    
+    # Second Residual Connection
+    x2 = x1 + ff2 # (T, n_embd)
+    
+    # Language Model Head (Logits)
+    logits = x2 @ W_lm + b_lm # (T, vocab_size)
+    probs = softmax(logits, axis=-1) # (T, vocab_size)
+    
+    # Compute Cross-Entropy Loss
+    loss = -np.sum(np.log(probs[np.arange(T), y_seq] + 1e-15)) / T
+    
+    if epoch % 100 == 0:
+        print(f"Epoch {epoch} - Loss: {loss:.4f}")
+        
+    # --- BACKWARD PASS (Backpropagation) ---
+    # Gradient of loss with respect to logits
+    dlogits = probs.copy()
+    dlogits[np.arange(T), y_seq] -= 1.0
+    dlogits /= T # (T, vocab_size)
+    
+    # Gradients for LM Head
+    dW_lm = x2.T @ dlogits
+    db_lm = np.sum(dlogits, axis=0, keepdims=True)
+    dx2 = dlogits @ W_lm.T # (T, n_embd)
+    
+    # Backprop second residual layer
+    dx1 = dx2.copy() 
+    dff2 = dx2.copy()
+    
+    # Gradients for Feed-Forward Network
+    dW_ff2 = ff1_act.T @ dff2
+    db_ff2 = np.sum(dff2, axis=0, keepdims=True)
+    dff1_act = dff2 @ W_ff2.T
+    dff1 = dff1_act * (ff1 > 0) # ReLU derivative
+    
+    dW_ff1 = x1.T @ dff1
+    db_ff1 = np.sum(dff1, axis=0, keepdims=True)
+    dx1 += dff1 @ W_ff1.T
+    
+    # Backprop first residual layer
+    dx0 = dx1.copy()
+    dattn_proj = dx1.copy()
+    
+    # Gradients for Attention Output Projection
+    dW_proj = attn_out.T @ dattn_proj
+    dattn_out = dattn_proj @ W_proj.T
+    
+    # Backprop Attention Matrix Multiplication (attn_probs @ V)
+    dattn_probs = dattn_out @ V.T # (T, T)
+    dV = attn_probs.T @ dattn_out # (n_embd, n_embd)
+    
+    # Backprop Softmax & Causal Masking
+    dattn_scores = attn_probs * (dattn_probs - np.sum(dattn_probs * attn_probs, axis=-1, keepdims=True))
+    dattn_scores = np.where(mask == 1, dattn_scores, 0) # Gradients don't pass through masked values
+    dattn_scores /= np.sqrt(n_embd)
+    
+    # Gradients for Q, K vectors
+    dQ = dattn_scores @ K
+    dK = dattn_scores.T @ Q
+    
+    # Gradients for W_q, W_k, W_v weight projections
+    dW_q = x0.T @ dQ
+    dW_k = x0.T @ dK
+    dW_v = x0.T @ dV
+    
+    # Final step backpropping into the initial embedding input x0
+    dx0 += dQ @ W_q.T + dK @ W_k.T + dV @ W_v.T
+    
+    # --- WEIGHTS UPDATE (Vanilla SGD) ---
+    W_lm -= lr * dW_lm
+    b_lm -= lr * db_lm
+    W_ff2 -= lr * dW_ff2
+    b_ff2 -= lr * db_ff2
+    W_ff1 -= lr * dW_ff1
+    b_ff1 -= lr * db_ff1
+    W_proj -= lr * dW_proj
+    W_v -= lr * dW_v
+    W_k -= lr * dW_k
+    W_q -= lr * dW_q
+    
+    # Inline update for lookup embeddings corresponding to used input sequences
+    W_token[x_seq] -= lr * dx0
+    W_pos[np.arange(T)] -= lr * dx0
+
+# 4. Text Generation Function
+def generate(start_str, max_tokens=15):
+    context = encode(start_str)
+    for _ in range(max_tokens):
+        # Enforce context window constraint
+        x_cond = context[-block_size:]
+        T = len(x_cond)
+        
+        # Forward pass components
+        t_emb = W_token[x_cond]
+        p_emb = W_pos[np.arange(T)]
+        x = t_emb + p_emb
+        
+        # Attention
+        attn = softmax(np.where(np.tril(np.ones((T, T))) == 1, ((x @ W_q) @ (x @ W_k).T) / np.sqrt(n_embd), -1e9))
+        x = x + (attn @ (x @ W_v)) @ W_proj
+        
+        # Feed-forward
+        x = x + relu(x @ W_ff1 + b_ff1) @ W_ff2 + b_ff2
+        
+        # Logits prediction
+        logits = x[-1, :] @ W_lm + b_lm
+        next_token = np.argmax(logits) # Deterministic generation (greedy choice)
+        context.append(next_token)
+        
+    return decode(context)
+
+print("\nPromspt: 'Boboiboy'")
+print(f"Generated text:{generate('Boboiboy', max_tokens=15)}")
