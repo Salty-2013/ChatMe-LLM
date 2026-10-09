@@ -1,0 +1,297 @@
+ChatMe(Mark 6 upgrade)
+
+Additional update:
+Multi-head attention
+
+import numpy as np
+import pandas as pd
+
+##LLM MODEL NAME: ChatMe##
+
+epochs = 10000
+learning_rate = 0.001
+block_size = 32
+n_embd = 64
+n_heads = 2
+heads_dim = n_embd // n_heads
+vocab_size = 0
+batch_size = 32
+
+
+data = pd.read_csv("MAIN AI/Dataset.csv")
+text = "\n".join(data["text"].astype(str).tolist())
+print(len(text))
+
+chars = sorted(list(set(text)))
+vocab_size = len(chars)
+STRtoI = {ch : x for x, ch in enumerate(chars)}
+ItoSTR = {x : ch for x, ch in enumerate(chars)}
+
+encode = lambda y : [STRtoI[x] for x in y]
+decode = lambda a : ''.join([ItoSTR[b] for b in a])
+data = encode(text)
+
+w_token = np.load("MAIN AI/LLM MEMORY/w_token.npy")
+w_pos = np.load("MAIN AI/LLM MEMORY/w_pos.npy")
+
+w_Q = np.load("MAIN AI/LLM MEMORY/w_q.npy")
+w_K = np.load("MAIN AI/LLM MEMORY/w_k.npy")
+w_V = np.load("MAIN AI/LLM MEMORY/w_v.npy")
+w_proj = np.load("MAIN AI/LLM MEMORY/w_proj.npy")
+
+ff_hidden = 4 * n_embd
+w_ff1 = np.load("MAIN AI/LLM MEMORY/w_ff1.npy")
+b_ff1 = np.load("MAIN AI/LLM MEMORY/b_ff1.npy")
+w_ff2 = np.load("MAIN AI/LLM MEMORY/w_ff2.npy")
+b_ff2 = np.load("MAIN AI/LLM MEMORY/b_ff2.npy")
+
+w_lm = np.load("MAIN AI/LLM MEMORY/w_lm.npy")
+b_lm = np.load("MAIN AI/LLM MEMORY/b_lm.npy")
+
+def relu(x) :
+    return np.maximum(0, x)
+
+def softmax(x, axis =- 1) :
+    exps = np.exp(x - np.max(x, axis=axis, keepdims=True))
+    return exps / np.sum(exps, axis=axis, keepdims=True)
+
+for epoch in range(epochs) :
+    rs = np.random.randint(0, len(data) - block_size - 1, size = batch_size)
+
+    total_dw_lm = np.zeros_like(w_lm)
+    total_db_lm = np.zeros_like(b_lm)
+    total_dw_ff2 = np.zeros_like(w_ff2)
+    total_db_ff2 = np.zeros_like(b_ff2)
+    
+    total_dw_ff1 = np.zeros_like(w_ff1)
+    total_db_ff1 = np.zeros_like(b_ff1)
+    total_dw_proj = np.zeros_like(w_proj)
+
+    total_dw_V = np.zeros_like(w_V)
+    total_dw_K = np.zeros_like(w_K)
+    total_dw_Q = np.zeros_like(w_Q)
+
+    total_dCE = np.zeros_like(w_token)
+    total_dPE = np.zeros_like(w_pos)
+    
+    for r in rs:
+        Q = data[r:r + block_size]
+        A = data[r + 1:r + block_size + 1]
+        T = len(Q)
+        
+        tok_emb = w_token[Q]
+        pos_emb = w_pos[np.arange(T)]
+        CE = tok_emb + pos_emb  ##CE = Combined Embedding##
+
+        q = CE @ w_Q #Query#
+        k = CE @ w_K #Key#
+        v = CE @ w_V #Value#
+
+        Q_heads = q.reshape(T, n_heads, heads_dim)
+        Q_heads = Q_heads.transpose(1, 0, 2)
+        K_heads = k.reshape(T, n_heads, heads_dim)
+        K_heads = K_heads.transpose(1, 0, 2)
+        V_heads = v.reshape(T, n_heads, heads_dim)
+        V_heads = V_heads.transpose(1, 0, 2)
+
+        atn_scores = Q_heads @ K_heads.transpose(0, 2, 1) / np.sqrt(heads_dim) ##Find something relevant)##
+
+        mask = np.tril(np.ones((T, T))) #Lower Triangular Matrix#
+        atn_scores = np.where(mask == 1, atn_scores, -1e9)
+
+        atn_probs = softmax(atn_scores, axis=-1)
+
+        atn_output = atn_probs @ V_heads
+        atn_output = atn_output.transpose(1, 0, 2)
+        atn_output = atn_output.reshape(T, n_embd)
+        atn_projected = atn_output @ w_proj
+
+        PCE = CE + atn_projected ##PCE = Plus Combined Embedding##
+
+        ff1 = PCE @ w_ff1 + b_ff1
+        ff1_act = relu(ff1)
+        ff2 = ff1_act @ w_ff2 + b_ff2
+
+        PPCE = PCE + ff2 ##PPCE = Plus Plus Combined Embedding##
+
+        logits = PPCE @ w_lm + b_lm
+        probs = softmax(logits, axis=-1)
+
+        loss = -np.sum(np.log(probs[np.arange(T), A] + 1e-15)) / T
+
+        dlogits = probs.copy()
+        dlogits[np.arange(T), A] -= 1.0
+        dlogits /= T
+
+        dw_lm = PPCE.T @ dlogits
+        db_lm = np.sum(dlogits, axis=0, keepdims=True)
+        PPCE = dlogits @ w_lm.T
+
+        dPCE = PPCE.copy()
+        dff2 = PPCE.copy()
+
+        dw_ff2 = ff1_act.T @ dff2
+        db_ff2 = np.sum(dff2, axis=0, keepdims=True)
+        dff1_act = dff2 @ w_ff2.T
+        dff1 = dff1_act * (ff1 > 0)
+
+        dw_ff1 = PCE.T @ dff1
+        db_ff1 = np.sum(dff1, axis=0, keepdims=True)
+        dPCE += dff1 @ w_ff1.T
+
+        dCE = dPCE.copy()
+        datn_proj = dPCE.copy()
+
+        dw_proj = atn_output.T @ datn_proj
+        datn_output = datn_proj @ w_proj.T
+        datn_output = datn_output.reshape(T, n_heads, heads_dim)
+        datn_output = datn_output.transpose(1, 0, 2)
+
+        datn_probs = datn_output @ V_heads.transpose(0, 2, 1)
+        dV_heads = atn_probs.transpose(0, 2, 1) @ datn_output
+
+        datn_scores = atn_probs * (datn_probs - np.sum(datn_probs * atn_probs, axis=-1, keepdims=True))
+        datn_scores = np.where(mask == 1, datn_scores, 0) # Gradients don't pass through masked values
+        datn_scores /= np.sqrt(heads_dim)
+
+        dQ_heads = datn_scores @ K_heads
+        dK_heads = datn_scores.transpose(0, 2, 1) @ Q_heads
+
+        dQ = dQ_heads.transpose(1, 0, 2).reshape(T, n_embd)
+        dK = dK_heads.transpose(1, 0, 2).reshape(T, n_embd)
+        dV = dV_heads.transpose(1, 0, 2).reshape(T, n_embd)
+
+        dw_Q = CE.T @ dQ
+        dw_K = CE.T @ dK
+        dw_V = CE.T @ dV
+
+        dCE += dQ @ w_Q.T + dK @ w_K.T + dV @ w_V.T
+
+        total_dPE[np.arange(T)] += dCE
+        np.add.at(total_dCE, Q, dCE)
+
+        total_dw_lm += dw_lm
+        total_db_lm += db_lm
+        total_dw_ff2 += dw_ff2
+        total_db_ff2 += db_ff2
+        total_dw_ff1 += dw_ff1
+        total_db_ff1 += db_ff1
+        total_dw_proj += dw_proj
+        total_dw_V += dw_V
+        total_dw_K += dw_K
+        total_dw_Q += dw_Q
+
+    total_dw_lm /= batch_size
+    total_db_lm /= batch_size
+
+    total_dw_ff2 /= batch_size
+    total_db_ff2 /= batch_size
+
+    total_dw_ff1 /= batch_size
+    total_db_ff1 /= batch_size
+
+    total_dw_proj /= batch_size
+
+    total_dw_V /= batch_size
+    total_dw_K /= batch_size
+    total_dw_Q /= batch_size
+
+    total_dCE /= batch_size
+    total_dPE /= batch_size
+
+    w_lm -= learning_rate * total_dw_lm
+    b_lm -= learning_rate * total_db_lm
+
+    w_ff2 -= learning_rate * total_dw_ff2
+    b_ff2 -= learning_rate * total_db_ff2
+
+    w_ff1 -= learning_rate * total_dw_ff1
+    b_ff1 -= learning_rate * total_db_ff1
+
+    w_proj -= learning_rate * total_dw_proj
+
+    w_V -= learning_rate * total_dw_V
+    w_K -= learning_rate * total_dw_K
+    w_Q -= learning_rate * total_dw_Q
+
+    w_token -= learning_rate * total_dCE
+    w_pos -= learning_rate * total_dPE
+
+    if epoch % 100 == 0:
+        print(f"Epoch {epoch}, Loss: {loss:.4f}")
+
+def generate(start_str, max_tokens=15, temperature = 0.7):
+    context = encode(start_str)
+    for _ in range(max_tokens):
+        
+        x_cond = context[-block_size:]
+        T = len(x_cond)
+        
+        t_emb = w_token[x_cond]
+        p_emb = w_pos[np.arange(T)]
+        x = t_emb + p_emb
+        
+        q = x @ w_Q
+        k = x @ w_K
+        v = x @ w_V
+        Q_heads = q.reshape(T, n_heads, heads_dim).transpose(1, 0, 2)
+        K_heads = k.reshape(T, n_heads, heads_dim).transpose(1, 0, 2)
+        V_heads = v.reshape(T, n_heads, heads_dim).transpose(1, 0, 2)
+        
+        atn_scores = Q_heads @ K_heads.transpose(0, 2, 1)
+        atn_scores /= np.sqrt(heads_dim)
+        
+        mask = np.tril(np.ones((T, T)))
+        atn_scores = np.where(mask == 1, atn_scores, -1e9)
+        
+        atn_probs = softmax(atn_scores, axis=-1)
+        
+        atn_output = atn_probs @ V_heads
+        
+        atn_output = atn_output.transpose(1, 0, 2)
+        atn_output = atn_output.reshape(T, n_embd)
+        
+        atn_projected = atn_output @ w_proj
+        x = x + atn_projected
+            
+        x = x + relu(x @ w_ff1 + b_ff1) @ w_ff2 + b_ff2
+            
+        logits = x[-1, :] @ w_lm + b_lm
+        logits = np.ravel(logits)
+        logits = logits / max(temperature, 1e-5)  # Prevent division by zero
+
+        k = 5
+        top_k_indices = np.argpartition(logits, -k)[-k:]
+        min_logit_in_top_k = np.min(logits[top_k_indices])
+        logits[logits < min_logit_in_top_k] = -1e9
+
+        logits_stable = logits - np.max(logits)  # For numerical stability
+        exps = np.exp(logits_stable)
+        probs_1d = exps / np.sum(exps)
+
+
+        next_token = np.random.choice(len(probs_1d), p = probs_1d) #Not greedy anymore#
+        context.append(next_token)
+            
+    return decode(context)
+
+while True:
+    Ask = input("\nAsk ChatMe: ")
+    print(f"ChatMe: {generate(Ask, max_tokens=15, temperature = 0.7)}")
+    if Ask.lower() == "exit":
+        print("Please go and never come front of my face again. I will not answer you anymore. Goodbye.")
+        break
+
+np.save("MAIN AI/LLM MEMORY/w_token.npy", w_token)
+np.save("MAIN AI/LLM MEMORY/w_pos.npy", w_pos)
+np.save("MAIN AI/LLM MEMORY/w_lm.npy", w_lm)
+np.save("MAIN AI/LLM MEMORY/w_ff1.npy", w_ff1)
+np.save("MAIN AI/LLM MEMORY/w_ff2.npy", w_ff2)
+np.save("MAIN AI/LLM MEMORY/w_proj.npy", w_proj)
+np.save("MAIN AI/LLM MEMORY/w_v.npy", w_V)
+np.save("MAIN AI/LLM MEMORY/w_k.npy", w_K)
+np.save("MAIN AI/LLM MEMORY/w_q.npy", w_Q)
+np.save("MAIN AI/LLM MEMORY/b_ff1.npy", b_ff1)
+np.save("MAIN AI/LLM MEMORY/b_ff2.npy", b_ff2)
+np.save("MAIN AI/LLM MEMORY/b_lm.npy", b_lm)
+print("\nAll weights and biases have been saved to the 'LLM MEMORY' folder.")
