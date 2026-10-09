@@ -1,0 +1,295 @@
+ChatMe(Mark 3 upgrade)
+
+Additional Update:
+Block size from 4 to 8
+
+import numpy as np
+
+##LLM MODEL NAME: ChatMe##
+
+epochs = 10000
+learning_rate = 0.0001
+block_size = 8
+n_embd = 30
+vocab_size = 0
+
+text = """
+ABCDEFGHIJKLMNOPQRSTUVWXYZ.
+abcdefghijklmnopqrstuvwxyz.
+Hello World!
+HELLO WORLD!
+hello world.
+
+Aku sedang belajar AI.
+Saya suka Python, C++, dan robotik.
+ChatMe sedang belajar menjadi lebih bijak.
+Ini ialah percubaan pertama ChatMe.
+
+Machine Learning is fascinating.
+Artificial Intelligence is everywhere.
+Neural networks learn patterns from data.
+Transformers use attention to understand context.
+
+1234567890
+0123456789
+42 + 8 = 50
+x = 10
+y = x * 2
+
+Symbols:
+! @ # $ % ^ & * ( ) - _ + = [ ] { } < >
+/ \\ | : ; ' " , . ? ~ `
+© ® ™ € £ ¥ ₹ ₩ ₽
+→ ← ↑ ↓ ↔ ⇒ ∞ ≈ ≠ ≤ ≥ ± × ÷ √
+
+UPPERCASE LETTERS:
+ABCDEFGHIJKLMNOPQRSTUVWXYZ
+
+lowercase letters:
+abcdefghijklmnopqrstuvwxyz
+
+Malay:
+Selamat pagi!
+Apa khabar?
+Aku sedang membina model bahasa kecil.
+Kucing itu tidur di atas kerusi.
+
+English:
+The quick brown fox jumps over the lazy dog.
+Learning to code takes patience and practice.
+Small experiments can lead to big discoveries.
+
+日本語:
+こんにちは世界。
+私はAIを勉強しています。
+これは小さな言語モデルです。
+
+中文:
+你好，世界！
+人工智能很有趣。
+我正在学习机器学习。
+
+한국어:
+안녕하세요 세계!
+인공지능을 공부하고 있습니다.
+
+العربية:
+مرحبا بالعالم!
+أنا أتعلم الذكاء الاصطناعي.
+
+Español:
+¡Hola mundo!
+Estoy aprendiendo inteligencia artificial.
+
+Français:
+Bonjour le monde !
+J'apprends l'intelligence artificielle.
+
+Deutsch:
+Hallo Welt!
+Ich lerne künstliche Intelligenz.
+
+Русский:
+Привет, мир!
+Я изучаю искусственный интеллект.
+
+Ελληνικά:
+Γεια σου κόσμε!
+Μαθαίνω τεχνητή νοημοσύνη.
+
+Mixed:
+Hello! Aku suka AI 🤖
+AI + robot = masa depan?
+ChatMe v1.0 → learning...
+Error 404: brain not found.
+print("Hello, world!")
+if AI == smart:
+    print("Interesting!")
+
+
+END.
+"""
+
+chars = sorted(list(set(text)))
+vocab_size = len(chars)
+STRtoI = {ch : x for x, ch in enumerate(chars)}
+ItoSTR = {x : ch for x, ch in enumerate(chars)}
+
+encode = lambda y : [STRtoI[x] for x in y]
+decode = lambda a : ''.join([ItoSTR[b] for b in a])
+data = encode(text)
+
+w_token = np.load("LLM MEMORY/w_token.npy")
+w_pos = np.load("LLM MEMORY/w_pos.npy")
+
+w_Q = np.load("LLM MEMORY/w_q.npy")
+w_K = np.load("LLM MEMORY/w_k.npy")
+w_V = np.load("LLM MEMORY/w_v.npy")
+w_proj = np.load("LLM MEMORY/w_proj.npy")
+
+ff_hidden = 4 * n_embd
+w_ff1 = np.load("LLM MEMORY/w_ff1.npy")
+b_ff1 = np.load("LLM MEMORY/b_ff1.npy")
+w_ff2 = np.load("LLM MEMORY/w_ff2.npy")
+b_ff2 = np.load("LLM MEMORY/b_ff2.npy")
+
+w_lm = np.load("LLM MEMORY/w_lm.npy")
+b_lm = np.load("LLM MEMORY/b_lm.npy")
+
+def neuron(i, w1, w2, b) :
+    weights = np.array([w1, w2])
+    return np.dot(i, weights) + b
+
+def relu(x) :
+    return np.maximum(0, x)
+   
+def neuronl3(nl2, w3, b3) :
+    return np.dot(nl2, w3) + b3
+    
+def calculate_loss(nl3, t) :
+    return np.mean((nl3 - t) ** 2)
+
+def softmax(x, axis =- 1) :
+    exps = np.exp(x - np.max(x, axis=axis, keepdims=True))
+    return exps / np.sum(exps, axis=axis, keepdims=True)
+
+for epoch in range(epochs) :
+    rs = np.random.randint(0, len(data) - block_size - 1)
+    Q = data[rs:rs + block_size] #Question#
+    A = data[rs + 1:rs + block_size + 1] #Target#
+
+    T = len(Q)
+
+    tok_emb = w_token[Q]
+    pos_emb = w_pos[np.arange(T)]
+    CE = tok_emb + pos_emb  ##CE = Combined Embedding##
+
+    q = CE @ w_Q #Query#
+    k = CE @ w_K #Key#
+    v = CE @ w_V #Value#
+
+    atn_scores = q @ k.T / np.sqrt(n_embd) ##Find something relevant)##
+
+    mask = np.tril(np.ones((T, T))) #Lower Triangular Matrix#
+    atn_scores = np.where(mask == 1, atn_scores, -1e9)
+
+    atn_probs = softmax(atn_scores, axis=-1)
+
+    atn_output = atn_probs @ v
+    atn_projected = atn_output @ w_proj
+
+    PCE = CE + atn_projected ##PCE = Plus Combined Embedding##
+
+    ff1 = PCE @ w_ff1 + b_ff1
+    ff1_act = relu(ff1)
+    ff2 = ff1_act @ w_ff2 + b_ff2
+
+    PPCE = PCE + ff2 ##PPCE = Plus Plus Combined Embedding##
+
+    logits = PPCE @ w_lm + b_lm
+    probs = softmax(logits, axis=-1)
+
+    loss = -np.sum(np.log(probs[np.arange(T), A] + 1e-15)) / T
+
+    if epoch % 100 == 0:
+        print(f"Epoch {epoch}, Loss: {loss:.4f}")
+
+    dlogits = probs.copy()
+    dlogits[np.arange(T), A] -= 1.0
+    dlogits /= T
+
+    dw_lm = PPCE.T @ dlogits
+    db_lm = np.sum(dlogits, axis=0, keepdims=True)
+    PPCE = dlogits @ w_lm.T
+
+    dPCE = PPCE.copy()
+    dff2 = PPCE.copy()
+
+    dw_ff2 = ff1_act.T @ dff2
+    db_ff2 = np.sum(dff2, axis=0, keepdims=True)
+    dff1_act = dff2 @ w_ff2.T
+    dff1 = dff1_act * (ff1 > 0)
+
+    dw_ff1 = PCE.T @ dff1
+    db_ff1 = np.sum(dff1, axis=0, keepdims=True)
+    dPCE += dff1 @ w_ff1.T
+
+    dCE = dPCE.copy()
+    datn_proj = dPCE.copy()
+
+    dw_proj = atn_output.T @ datn_proj
+    datn_output = datn_proj @ w_proj.T
+
+    datn_probs = datn_output @ v.T
+    dV = atn_probs.T @ datn_output
+
+    datn_scores = atn_probs * (datn_probs - np.sum(datn_probs * atn_probs, axis=-1, keepdims=True))
+    datn_scores = np.where(mask == 1, datn_scores, 0) # Gradients don't pass through masked values
+    datn_scores /= np.sqrt(n_embd)
+
+    dQ = datn_scores @ k
+    dK = datn_scores.T @ q
+
+    dw_Q = CE.T @ dQ
+    dw_K = CE.T @ dK
+    dw_V = CE.T @ dV
+
+    dCE += dQ @ w_Q.T + dK @ w_K.T + dV @ w_V.T
+
+    w_lm -= learning_rate * dw_lm
+    b_lm -= learning_rate * db_lm
+    w_ff2 -= learning_rate * dw_ff2
+    b_ff2 -= learning_rate * db_ff2
+    w_ff1 -= learning_rate * dw_ff1
+    b_ff1 -= learning_rate * db_ff1
+    w_proj -= learning_rate * dw_proj
+    w_V -= learning_rate * dw_V
+    w_K -= learning_rate * dw_K
+    w_Q -= learning_rate * dw_Q
+
+    w_token[Q] -= learning_rate * dCE
+    w_pos[np.arange(T)] -= learning_rate * dCE
+
+def generate(start_str, max_tokens=15):
+    context = encode(start_str)
+    for _ in range(max_tokens):
+        
+        x_cond = context[-block_size:]
+        T = len(x_cond)
+        
+        t_emb = w_token[x_cond]
+        p_emb = w_pos[np.arange(T)]
+        x = t_emb + p_emb
+            
+        atn = softmax(np.where(np.tril(np.ones((T, T))) == 1, ((x @ w_Q) @ (x @ w_K).T) / np.sqrt(n_embd), -1e9))
+        x = x + (atn @ (x @ w_V)) @ w_proj
+            
+        x = x + relu(x @ w_ff1 + b_ff1) @ w_ff2 + b_ff2
+            
+        logits = x[-1, :] @ w_lm + b_lm
+        next_token = np.argmax(logits) # Deterministic generation (greedy choice)
+        context.append(next_token)
+            
+    return decode(context)
+
+while True:
+    Ask = input("\nAsk ChatMe: ")
+    print(f"ChatMe: {generate(Ask, max_tokens=15)}")
+    print(len(generate(Ask, max_tokens=15)))
+    if Ask.lower() == "exit":
+        print("Please go and never come front of my face again. I will not answer you anymore. Goodbye.")
+        break
+
+np.save("LLM MEMORY/w_token.npy", w_token)
+np.save("LLM MEMORY/w_pos.npy", w_pos)
+np.save("LLM MEMORY/w_lm.npy", w_lm)
+np.save("LLM MEMORY/w_ff1.npy", w_ff1)
+np.save("LLM MEMORY/w_ff2.npy", w_ff2)
+np.save("LLM MEMORY/w_proj.npy", w_proj)
+np.save("LLM MEMORY/w_v.npy", w_V)
+np.save("LLM MEMORY/w_k.npy", w_K)
+np.save("LLM MEMORY/w_q.npy", w_Q)
+np.save("LLM MEMORY/b_ff1.npy", b_ff1)
+np.save("LLM MEMORY/b_ff2.npy", b_ff2)
+np.save("LLM MEMORY/b_lm.npy", b_lm)
+print("\nAll weights and biases have been saved to the 'LLM MEMORY' folder.")
